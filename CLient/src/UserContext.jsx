@@ -11,7 +11,6 @@ export function UserContextProvider({ children }) {
 
   useEffect(() => {
     axios.get('/profile').then(response => {
-      console.log('Profile response:', response.data); // Log response for debugging
       setId(response.data.userId);
       setUsername(response.data.username);
     }).catch(error => {
@@ -25,3 +24,4 @@ export function UserContextProvider({ children }) {
     </UserContext.Provider>
   );
 }
+
