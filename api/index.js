@@ -1,11 +1,11 @@
 
 
-
 const express = require('express');
 const dotenv = require('dotenv');
 dotenv.config();
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');
+const Message = require('./models/Message'); // Import the Message model
 const mongoose = require('mongoose');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
@@ -40,7 +40,6 @@ const wss = new ws.WebSocketServer({ server });
 wss.on('connection', (connection, req) => {
   console.log("New WebSocket connection");
 
-
   connection.on('close', () => {
     console.log('WebSocket connection closed');
   });
@@ -49,19 +48,62 @@ wss.on('connection', (connection, req) => {
     console.error('WebSocket error:', error);
   });
 
+  connection.on('message', async (message) => {
+    const MessageData = JSON.parse(message.toString());
+    const { recipient, text } = MessageData;
+    if (recipient && text) {
+      // Save message to the database
+      const newMessage = await Message.create({
+        sender: connection.userId,
+        recipient,
+        text,
+      });
+
+      // Broadcast message to the recipient
+      [...wss.clients].filter(c => c.userId === recipient).forEach(c => {
+        c.send(JSON.stringify({
+          sender: connection.userId,
+          text,
+          recipient,
+          timestamp: newMessage.timestamp // Include timestamp
+        }));
+      });
+    }
+  });
+
   const cookies = req.headers.cookie;
   if (cookies) {
     const tokenCookieString = cookies.split(';').find(str => str.trim().startsWith('token='));
     if (tokenCookieString) {
       const token = tokenCookieString.split('=')[1];
       if (token) {
-        jwt.verify(token, jwtsecret, {}, (err, userData) => {
+        jwt.verify(token, jwtsecret, {}, async (err, userData) => {
           if (err) {
             console.error("JWT verification error: ", err);
           } else {
-           const {userId,username}=userData;
-           connection.userId=userId;
-           connection.username=username;
+            const { userId, username } = userData;
+            connection.userId = userId;
+            connection.username = username;
+
+            // Send the list of online users
+            console.log([...wss.clients].map(c => c.username));
+            [...wss.clients].forEach(client => {
+              client.send(JSON.stringify({
+                online: [...wss.clients].map(c => (
+                  { userId: c.userId, username: c.username }
+                ))
+              }));
+            });
+
+            // Retrieve and send the message history
+            const messages = await Message.find({
+              $or: [
+                { sender: userId },
+                { recipient: userId }
+              ]
+            }).sort({ timestamp: 1 }); // Sort messages by timestamp
+
+            connection.send(JSON.stringify({ type: 'history', messages }));
           }
         });
       } else {
@@ -73,16 +115,7 @@ wss.on('connection', (connection, req) => {
   } else {
     console.log("No cookies found in headers");
   }
-  console.log([...wss.clients].map(c=>c.username));
-  [...wss.clients].forEach(client =>{
-    client.send(JSON.stringify({
-      online:[...wss.clients].map(c=>(
-        {userId:c.userId,username:c.username}
-      ))
-    }))
-  })
 });
-
 
 app.post('/register', async (req, res) => {
   const { username, password } = req.body;
@@ -112,6 +145,7 @@ app.post('/register', async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
+
 app.get('/profile', (req, res) => {
   const token = req.cookies?.token;
   if (token) {
@@ -126,6 +160,7 @@ app.get('/profile', (req, res) => {
     res.status(401).json("No token");
   }
 });
+
 app.post('/login', async (req, res) => {
   const { username, password } = req.body;
   try {
